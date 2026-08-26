@@ -1,0 +1,26 @@
+<?php
+namespace App\Services;
+use App\Events\DomainRealtimeEvent;
+use App\Models\{Memory,MemoryComment,MemoryReaction};
+use App\Support\{ApiResponse,RequestContext};
+use Illuminate\Http\Request;
+class MemoryService
+{
+    public function handle(string $op,Request $r){return match(true){
+        $op==='get_memories'=>$this->index($r),$op==='post_memories'=>$this->store($r),$op==='get_memories_drafts'=>$this->drafts($r),
+        $op==='get_memories_memoryid'=>$this->show($r),$op==='patch_memories_memoryid'=>$this->update($r),$op==='delete_memories_memoryid'=>$this->destroy($r),
+        str_contains($op,'comments')=>$this->comments($op,$r),str_contains($op,'reactions')=>$this->reactions($op,$r),str_starts_with($op,'post_time_capsules')||str_starts_with($op,'get_time_capsules')=>$this->capsule($op,$r),
+        $op==='post_memories_memoryid_share'=>ApiResponse::ok(['share_token'=>bin2hex(random_bytes(16)),'expires_at'=>now()->addDay()]),
+        default=>ApiResponse::problem('Unsupported memory operation',$op,501,'not_implemented')};}
+    private function base(Request $r){return Memory::where('couple_space_id',RequestContext::coupleSpaceId($r));}
+    private function index(Request $r){$q=$this->base($r)->where('is_draft',false);if($r->filled('type'))$q->where('type',$r->string('type'));if($r->filled('q'))$q->where('title','ilike','%'.$r->string('q').'%');return ApiResponse::ok($q->latest()->cursorPaginate(min((int)$r->input('limit',30),100)));}
+    private function store(Request $r){$d=$r->validate(['type'=>'required|in:moment,letter,time_capsule,love_note,promise,milestone','title'=>'nullable|string|max:255','content'=>'nullable|array','tags'=>'nullable|array','is_draft'=>'nullable|boolean','reveal_at'=>'nullable|date']);$m=Memory::create(array_merge($d,['user_id'=>$r->user()->id,'couple_space_id'=>RequestContext::coupleSpaceId($r),'is_draft'=>$d['is_draft']??false,'is_locked'=>false]));event(new DomainRealtimeEvent('memory.created',$m->toArray(),null,$m->couple_space_id));return ApiResponse::created($m);}
+    private function drafts(Request $r){return ApiResponse::ok($this->base($r)->where('is_draft',true)->latest()->get());}
+    private function one(Request $r){return $this->base($r)->where('id',$r->route('memoryId'))->firstOrFail();}
+    private function show(Request $r){$m=$this->one($r);if($m->is_locked && $m->reveal_at && now()->lt($m->reveal_at))return ApiResponse::problem('Time Capsule locked','This Time Capsule has not reached its reveal time.',423,'time_capsule_locked');return ApiResponse::ok($m);}
+    private function update(Request $r){$m=$this->one($r);$m->fill($r->validate(['title'=>'nullable|string|max:255','content'=>'nullable|array','tags'=>'nullable|array','is_draft'=>'nullable|boolean','reveal_at'=>'nullable|date']))->save();event(new DomainRealtimeEvent('memory.updated',$m->toArray(),null,$m->couple_space_id));return ApiResponse::ok($m);}
+    private function destroy(Request $r){$m=$this->one($r);$id=$m->id;$space=$m->couple_space_id;$m->delete();event(new DomainRealtimeEvent('memory.deleted',['id'=>$id],null,$space));return ApiResponse::ok(['deleted'=>true]);}
+    private function comments(string $op,Request $r){if($op==='get_memories_memoryid_comments')return ApiResponse::ok(MemoryComment::where('memory_id',$this->one($r)->id)->oldest()->get());if($op==='post_memories_memoryid_comments'){$d=$r->validate(['body'=>'required|string|max:5000']);$m=$this->one($r);$c=MemoryComment::create(['memory_id'=>$m->id,'user_id'=>$r->user()->id,'body'=>$d['body']]);event(new DomainRealtimeEvent('memory.comment.created',$c->toArray(),null,$m->couple_space_id));return ApiResponse::created($c);} $c=MemoryComment::where('id',$r->route('commentId'))->where('user_id',$r->user()->id)->firstOrFail();if(str_starts_with($op,'patch')){$c->update($r->validate(['body'=>'required|string|max:5000']));return ApiResponse::ok($c);} $c->delete();return ApiResponse::ok(['deleted'=>true]);}
+    private function reactions(string $op,Request $r){$m=$this->one($r);if(str_starts_with($op,'post')){$d=$r->validate(['reaction'=>'required|string|max:50']);$x=MemoryReaction::updateOrCreate(['memory_id'=>$m->id,'user_id'=>$r->user()->id],['reaction'=>$d['reaction']]);event(new DomainRealtimeEvent('memory.reaction.updated',$x->toArray(),null,$m->couple_space_id));return ApiResponse::ok($x);}MemoryReaction::where('memory_id',$m->id)->where('user_id',$r->user()->id)->where('reaction',$r->route('reaction'))->delete();return ApiResponse::ok(['deleted'=>true]);}
+    private function capsule(string $op,Request $r){$m=$this->one($r);if($op==='get_time_capsules_memoryid_status')return ApiResponse::ok(['locked'=>$m->is_locked,'reveal_at'=>$m->reveal_at,'revealed_at'=>$m->revealed_at]);if(str_ends_with($op,'_lock')){$m->update(['is_locked'=>true]);}elseif(str_ends_with($op,'_schedule')){$d=$r->validate(['reveal_at'=>'required|date|after:now']);$m->update(['is_locked'=>true,'reveal_at'=>$d['reveal_at']]);}else{$allowed=!$m->reveal_at||now()->gte($m->reveal_at);if(!$allowed)return ApiResponse::problem('Reveal not due','The Time Capsule reveal time has not arrived.',423,'time_capsule_locked');$m->update(['is_locked'=>false,'revealed_at'=>now()]);event(new DomainRealtimeEvent('time_capsule.revealed',$m->toArray(),null,$m->couple_space_id));}return ApiResponse::ok($m);}
+}
