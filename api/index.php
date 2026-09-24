@@ -11,4 +11,15 @@ if (! is_dir('/tmp/views')) {
 
 $_SERVER['DOCUMENT_ROOT'] = dirname(__DIR__).'/public';
 
+// Vercel runs the rewritten function path. Restore the original public path
+// before Laravel captures the request so /api/v1/* reaches API routing.
+if (isset($_GET['vercel_path'])) {
+    $requestPath = '/'.ltrim((string) $_GET['vercel_path'], '/');
+    unset($_GET['vercel_path']);
+
+    $query = http_build_query($_GET);
+    $_SERVER['REQUEST_URI'] = $requestPath.($query !== '' ? '?'.$query : '');
+    $_SERVER['PATH_INFO'] = $requestPath;
+}
+
 require dirname(__DIR__).'/public/index.php';
