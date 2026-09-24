@@ -1,0 +1,5 @@
+.git
+.github
+tests
+storage/logs/*.log
+vendor
