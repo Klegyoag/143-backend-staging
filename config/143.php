@@ -1,8 +1,8 @@
 <?php
 return [
-    'access_token_minutes' => (int) env('ACCESS_TOKEN_MINUTES', 30),
-    'refresh_token_days' => (int) env('REFRESH_TOKEN_DAYS', 30),
-    'invite_hours' => (int) env('COUPLE_INVITE_HOURS', 72),
+    'access_token_minutes' => (int) (env('ACCESS_TOKEN_MINUTES') ?: 30),
+    'refresh_token_days' => (int) (env('REFRESH_TOKEN_DAYS') ?: 30),
+    'invite_hours' => (int) (env('COUPLE_INVITE_HOURS') ?: 72),
     'upload_disk' => env('UPLOAD_DISK', 's3'),
     'legal' => ['required_types' => ['terms','privacy']],
     'ice_servers' => array_values(array_filter([
