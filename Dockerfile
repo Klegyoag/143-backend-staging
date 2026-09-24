@@ -1,6 +1,7 @@
 FROM composer:2 AS vendor
 WORKDIR /app
-COPY composer.json composer.lock ./RUN composer install --no-dev --no-scripts --no-interaction --prefer-dist --optimize-autoloader
+COPY composer.json composer.lock ./
+RUN composer install --no-dev --no-scripts --no-interaction --prefer-dist --optimize-autoloader
 
 FROM php:8.4-cli
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -13,5 +14,8 @@ COPY --from=vendor /app/vendor ./vendor
 RUN mkdir -p storage/framework/{cache,sessions,views} storage/logs bootstrap/cache \
     && chmod -R 775 storage bootstrap/cache \
     && php artisan package:discover --ansi
-EXPOSE 10000
-CMD ["sh","-lc","php artisan serve --host=0.0.0.0 --port=${PORT:-10000}"]
+COPY scripts/start-free.sh /usr/local/bin/start-free
+RUN sed -i 's/\r$//' /usr/local/bin/start-free \
+    && chmod +x /usr/local/bin/start-free
+EXPOSE 8080
+CMD ["start-free"]
