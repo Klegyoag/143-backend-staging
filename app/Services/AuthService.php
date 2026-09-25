@@ -199,6 +199,11 @@ class AuthService
         ];
     }
 
+    public function issueForLinkedDevice(User $user, string $device): array
+    {
+        return $this->issue($user, $device);
+    }
+
     private function refresh(Request $request)
     {
         $data = $request->validate(['refresh_token' => ['required','string']]);
