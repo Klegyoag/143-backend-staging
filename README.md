@@ -7,7 +7,7 @@ Backend package for the **new standalone 143 mobile application**. It is designe
 ## Fixed implementation baseline
 
 - Source mobile baseline: **514 capabilities across 36 modules**
-- API contract after the approved auth redesign: **351 HTTP operations across 265 paths**
+- API contract after the approved auth redesign: **356 HTTP operations across 270 paths**
 - Realtime contract: **53 event types**
 - PostgreSQL schema after migrations: **94 tables**
 - API prefix: `/api/v1`
