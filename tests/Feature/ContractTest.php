@@ -6,8 +6,8 @@ class ContractTest extends TestCase
     public function test_contract_counts_and_auth_override(): void
     {
         $contract=config('api_contract');
-        $this->assertCount(351,$contract);
-        $this->assertCount(265,array_unique(array_column($contract,'path')));
+        $this->assertCount(356,$contract);
+        $this->assertCount(270,array_unique(array_column($contract,'path')));
         $this->assertNotContains('generic',array_column($contract,'handler'));
         $auth=array_values(array_filter($contract,fn($e)=>$e['module']===2));
         $this->assertCount(11,$auth);

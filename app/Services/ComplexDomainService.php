@@ -3,7 +3,7 @@ namespace App\Services;
 
 use App\Events\DomainRealtimeEvent;
 use App\Jobs\GenerateDataExport;
-use App\Models\{Media,Memory};
+use App\Models\{Media,Memory,User};
 use App\Support\{ApiResponse,RequestContext};
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\{Crypt,DB,Http,Storage};
@@ -11,7 +11,9 @@ use Illuminate\Support\Str;
 
 class ComplexDomainService
 {
-    private array $supported = ['calls','calls.decline','calls.end','together-rooms','jars','albums','calendar.events','journeys','journey-sessions','reconnection','reconnection.sessions','linked-devices','linked-devices.link-intents','integrations.spotify','exports'];
+    public function __construct(private AuthService $auth) {}
+
+    private array $supported = ['calls','calls.decline','calls.end','together-rooms','jars','albums','calendar.events','journeys','journey-sessions','reconnection','reconnection.sessions','linked-devices','linked-devices.link-intents','linked-devices.qr-sessions','integrations.spotify','exports'];
     public function supports(string $resource): bool { return in_array($resource,$this->supported,true); }
 
     public function handle(string $op,string $resource,Request $r)
@@ -24,7 +26,7 @@ class ComplexDomainService
             $resource==='calendar.events'=>$this->calendar($op,$r),
             in_array($resource,['journeys','journey-sessions'],true)=>$this->journeys($op,$r),
             in_array($resource,['reconnection','reconnection.sessions'],true)=>$this->reconnection($op,$r),
-            in_array($resource,['linked-devices','linked-devices.link-intents'],true)=>$this->linkedDevices($op,$r),
+            in_array($resource,['linked-devices','linked-devices.link-intents','linked-devices.qr-sessions'],true)=>$this->linkedDevices($op,$r),
             $resource==='integrations.spotify'=>$this->spotify($op,$r),
             $resource==='exports'=>$this->exports($op,$r),
             default=>ApiResponse::problem('Unsupported complex domain operation',$op,501,'not_implemented'),
@@ -141,13 +143,65 @@ class ComplexDomainService
 
     private function linkedDevices(string $op,Request $r)
     {
+        if($op==='post_linked_devices_qr_sessions'){
+            $d=$r->validate(['device_name'=>'nullable|string|max:100','platform'=>'nullable|in:web,desktop,pwa','browser'=>'nullable|string|max:80']);
+            $id=(string)Str::uuid();$browserSecret=Str::random(64);$approvalToken=Str::random(64);$deviceId='web-'.Str::uuid();
+            $pairingCode=Str::upper(substr(Str::random(3),0,3).'-'.substr(Str::random(3),0,3));$expires=now()->addMinutes(2);
+            DB::table('device_link_intents')->insert($this->row($r,[
+                'id'=>$id,'type'=>hash('sha256',$approvalToken),'status'=>'waiting','scheduled_at'=>$expires,
+                'data'=>json_encode(['kind'=>'browser_qr','browser_secret_hash'=>hash('sha256',$browserSecret),'device_id'=>$deviceId,'device_name'=>$d['device_name']??'143 Web','platform'=>$d['platform']??'web','browser'=>$d['browser']??null,'pairing_code'=>$pairingCode]),
+            ]));
+            return ApiResponse::created(['session_id'=>$id,'browser_secret'=>$browserSecret,'pairing_code'=>$pairingCode,'qr_payload'=>'143://device-link/'.$id.'?token='.urlencode($approvalToken),'expires_at'=>$expires->toIso8601String(),'status'=>'waiting']);
+        }
+        if($op==='get_linked_devices_qr_sessions_sessionid_preview'){
+            $d=$r->validate(['approval_token'=>'required|string|min:32|max:200']);$session=$this->qrSession($r->route('sessionId'));
+            if(!$session||!$this->validQrApproval($session,$d['approval_token']))return ApiResponse::problem('Pairing request unavailable','This QR code is invalid or has expired.',422,'invalid_qr_session');
+            $data=$this->decode($session)['data']??[];
+            return ApiResponse::ok(['session_id'=>$session->id,'device_name'=>$data['device_name']??'143 Web','platform'=>$data['platform']??'web','browser'=>$data['browser']??null,'expires_at'=>$session->scheduled_at]);
+        }
+        if($op==='post_linked_devices_qr_sessions_sessionid_approve'){
+            $d=$r->validate(['approval_token'=>'required|string|min:32|max:200','approving_device_name'=>'nullable|string|max:100']);
+            return DB::transaction(function()use($r,$d){
+                $session=DB::table('device_link_intents')->where('id',$r->route('sessionId'))->lockForUpdate()->first();
+                if(!$session||!$this->validQrApproval($session,$d['approval_token']))return ApiResponse::problem('Pairing request unavailable','This QR code is invalid, used, or expired.',422,'invalid_qr_session');
+                $data=$this->decode($session)['data']??[];$grant=Str::random(80);
+                $data['exchange_grant_hash']=hash('sha256',$grant);$data['exchange_grant_encrypted']=Crypt::encryptString($grant);$data['approved_by_device']=$d['approving_device_name']??'143 mobile';
+                DB::table('device_link_intents')->where('id',$session->id)->update(['user_id'=>$r->user()->id,'status'=>'approved','data'=>json_encode($data),'updated_at'=>now()]);
+                return ApiResponse::ok(['approved'=>true,'device_name'=>$data['device_name']??'143 Web']);
+            });
+        }
+        if($op==='get_linked_devices_qr_sessions_sessionid'){
+            $d=$r->validate(['browser_secret'=>'required|string|min:32|max:200']);$session=$this->qrSession($r->route('sessionId'));
+            if(!$session||!$this->validBrowserSecret($session,$d['browser_secret']))return ApiResponse::problem('Pairing request unavailable','This pairing session is invalid.',404,'qr_session_not_found');
+            $data=$this->decode($session)['data']??[];$status=$session->scheduled_at<=now()&&$session->status==='waiting'?'expired':$session->status;
+            $payload=['session_id'=>$session->id,'status'=>$status,'expires_at'=>$session->scheduled_at];
+            if($status==='approved'&&!empty($data['exchange_grant_encrypted']))$payload['exchange_grant']=Crypt::decryptString($data['exchange_grant_encrypted']);
+            return ApiResponse::ok($payload);
+        }
+        if($op==='post_linked_devices_qr_sessions_sessionid_exchange'){
+            $d=$r->validate(['browser_secret'=>'required|string|min:32|max:200','exchange_grant'=>'required|string|min:32|max:200']);
+            return DB::transaction(function()use($r,$d){
+                $session=DB::table('device_link_intents')->where('id',$r->route('sessionId'))->lockForUpdate()->first();$data=$this->decode($session)['data']??[];
+                $valid=$session&&$session->status==='approved'&&$session->scheduled_at>now()&&$this->validBrowserSecret($session,$d['browser_secret'])&&!empty($data['exchange_grant_hash'])&&hash_equals($data['exchange_grant_hash'],hash('sha256',$d['exchange_grant']));
+                if(!$valid)return ApiResponse::problem('Pairing exchange denied','This pairing approval is invalid, expired, or was already used.',422,'invalid_pairing_exchange');
+                $user=User::find($session->user_id);if(!$user)return ApiResponse::problem('Account unavailable','The approving account is unavailable.',404,'account_unavailable');
+                $deviceName=$data['device_name']??'143 Web';$deviceId=$data['device_id']??('web-'.Str::uuid());$tokenName=$deviceName.' ('.$deviceId.')';
+                DB::table('device_link_intents')->where('id',$session->id)->update(['status'=>'exchanged','completed_at'=>now(),'data'=>json_encode(array_diff_key($data,array_flip(['exchange_grant_hash','exchange_grant_encrypted']))),'updated_at'=>now()]);
+                DB::table('linked_devices')->updateOrInsert(['user_id'=>$user->id,'type'=>$deviceId],['id'=>(string)Str::uuid(),'user_id'=>$user->id,'couple_space_id'=>null,'parent_id'=>null,'type'=>$deviceId,'status'=>'active','title'=>$deviceName,'body'=>null,'data'=>json_encode(['platform'=>$data['platform']??'web','browser'=>$data['browser']??null,'token_name'=>$tokenName]),'metadata'=>json_encode([]),'scheduled_at'=>null,'occurred_at'=>now(),'completed_at'=>null,'created_at'=>now(),'updated_at'=>now(),'deleted_at'=>null]);
+                return ApiResponse::ok($this->auth->issueForLinkedDevice($user,$tokenName));
+            });
+        }
         if($op==='get_linked_devices')return ApiResponse::ok(DB::table('linked_devices')->where('user_id',$r->user()->id)->whereNull('deleted_at')->latest()->get()->map(fn($x)=>$this->decode($x)));
         if($op==='post_linked_devices_link_intents'){$token='143-LINK-'.Str::upper(Str::random(32));$id=(string)Str::uuid();DB::table('device_link_intents')->insert($this->row($r,['id'=>$id,'type'=>hash('sha256',$token),'status'=>'pending','scheduled_at'=>now()->addMinutes(10),'data'=>json_encode(['created_by_device'=>$r->input('device_name')])]));return ApiResponse::created(['intent_id'=>$id,'link_token'=>$token,'qr_payload'=>'143://device-link/'.$id.'?token='.urlencode($token),'expires_at'=>now()->addMinutes(10)]);}
         if(str_contains($op,'intentid_confirm')){$id=$r->route('intentId');$d=$r->validate(['link_token'=>'required|string','device_id'=>'required|string|max:255','device_name'=>'nullable|string|max:100','platform'=>'required|in:android,ios,web']);$intent=DB::table('device_link_intents')->where('id',$id)->where('user_id',$r->user()->id)->where('status','pending')->where('scheduled_at','>',now())->first();if(!$intent||!hash_equals($intent->type,hash('sha256',$d['link_token'])))return ApiResponse::problem('Invalid link intent','The device link token is invalid or expired.',422,'invalid_link_intent');DB::table('device_link_intents')->where('id',$id)->update(['status'=>'confirmed','completed_at'=>now(),'updated_at'=>now()]);DB::table('linked_devices')->updateOrInsert(['user_id'=>$r->user()->id,'type'=>$d['device_id']],$this->row($r,['id'=>(string)Str::uuid(),'type'=>$d['device_id'],'title'=>$d['device_name']??$d['platform'],'status'=>'active','data'=>json_encode(['platform'=>$d['platform']])]));return ApiResponse::ok(['linked'=>true]);}
         if(str_contains($op,'link_intents_intentid')){$x=DB::table('device_link_intents')->where('id',$r->route('intentId'))->where('user_id',$r->user()->id)->first();return ApiResponse::ok($this->decode($x));}
-        if($r->method()==='DELETE'){DB::table('linked_devices')->where('id',$r->route('deviceId'))->where('user_id',$r->user()->id)->update(['deleted_at'=>now(),'status'=>'revoked','updated_at'=>now()]);return ApiResponse::ok(['revoked'=>true]);}
+        if($r->method()==='DELETE'){$device=DB::table('linked_devices')->where('id',$r->route('deviceId'))->where('user_id',$r->user()->id)->first();if(!$device)return ApiResponse::problem('Device not found','This linked device does not exist.',404,'not_found');$tokenName=($this->decode($device)['data']??[])['token_name']??null;DB::table('linked_devices')->where('id',$device->id)->update(['deleted_at'=>now(),'status'=>'revoked','updated_at'=>now()]);if($tokenName){$r->user()->tokens()->where('name',$tokenName)->delete();DB::table('refresh_tokens')->where('user_id',$r->user()->id)->where('device_name',$tokenName)->whereNull('revoked_at')->update(['revoked_at'=>now()]);}return ApiResponse::ok(['revoked'=>true]);}
         return ApiResponse::problem('Unsupported linked-device operation',$op,501,'not_implemented');
     }
+
+    private function qrSession(?string $id){return $id?DB::table('device_link_intents')->where('id',$id)->whereNull('deleted_at')->first():null;}
+    private function validQrApproval($session,string $token):bool{return $session&&$session->status==='waiting'&&$session->scheduled_at>now()&&hash_equals((string)$session->type,hash('sha256',$token));}
+    private function validBrowserSecret($session,string $secret):bool{$data=$this->decode($session)['data']??[];return !empty($data['browser_secret_hash'])&&hash_equals($data['browser_secret_hash'],hash('sha256',$secret));}
 
     private function spotify(string $op,Request $r)
     {

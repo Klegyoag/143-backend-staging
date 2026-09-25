@@ -15,7 +15,7 @@ class DomainService
         'calls'=>'calls','calls.decline'=>'calls','calls.end'=>'calls',
         'together-rooms'=>'together_rooms','together-rooms.leave'=>'together_rooms',
         'pings'=>'pings','pings.reactions'=>'pings','reminders'=>'reminders','check-ins'=>'check_ins','streaks'=>'streaks',
-        'linked-devices'=>'linked_devices','linked-devices.link-intents'=>'device_link_intents','blocks'=>'user_blocks','reports'=>'user_reports',
+        'linked-devices'=>'linked_devices','linked-devices.link-intents'=>'device_link_intents','linked-devices.qr-sessions'=>'device_link_intents','blocks'=>'user_blocks','reports'=>'user_reports',
         'exports'=>'data_exports','support.tickets'=>'support_tickets','feedback'=>'feedback_entries',
         'daily.questions'=>'daily_questions','daily.answers'=>'daily_answers','daily.activities'=>'daily_activities','daily'=>'daily_activities',
         'games'=>'games','game-sessions'=>'game_sessions','game-sessions.answers'=>'game_answers','xp'=>'xp_ledger','game-rewards'=>'achievement_unlocks',
