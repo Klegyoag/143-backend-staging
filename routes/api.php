@@ -3,6 +3,8 @@ use App\Http\Controllers\Api\ApiGatewayController;
 use Illuminate\Support\Facades\Route;
 
 $recoveryBypass = [
+    'get_consents',
+    'post_consents',
     'post_auth_recovery_confirm',
     'get_auth_recovery_status',
     'post_auth_recovery_code_regenerate',
