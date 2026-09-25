@@ -27,11 +27,12 @@ return Application::configure(basePath: dirname(__DIR__))
         $exceptions->shouldRenderJsonWhen(fn (Request $request, Throwable $e) => $request->is('api/*') || $request->expectsJson());
         $exceptions->render(function (Illuminate\Validation\ValidationException $e, Request $request) {
             if (! $request->is('api/*')) return null;
+            $firstError = collect($e->errors())->flatten()->first();
             return response()->json([
                 'type' => 'https://143.app/problems/validation-error',
                 'title' => 'Validation failed',
                 'status' => 422,
-                'detail' => 'One or more fields are invalid.',
+                'detail' => is_string($firstError) ? $firstError : 'One or more fields are invalid.',
                 'errors' => $e->errors(),
                 'trace_id' => $request->header('X-Request-ID'),
             ], 422, ['Content-Type' => 'application/problem+json']);
