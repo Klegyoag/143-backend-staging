@@ -804,6 +804,30 @@ return array (
     'public' => false,
     'legal_bypass' => false,
   ),
+  'call_ice_servers' =>
+  array (
+    'module' => 7,
+    'module_name' => 'Voice & Video Calling',
+    'method' => 'GET',
+    'path' => '/calls/ice-servers',
+    'operation' => 'get_calls_ice_servers',
+    'handler' => 'domain',
+    'resource' => 'calls',
+    'public' => false,
+    'legal_bypass' => false,
+  ),
+  'call_incoming' =>
+  array (
+    'module' => 7,
+    'module_name' => 'Voice & Video Calling',
+    'method' => 'GET',
+    'path' => '/calls/incoming',
+    'operation' => 'get_calls_incoming',
+    'handler' => 'domain',
+    'resource' => 'calls',
+    'public' => false,
+    'legal_bypass' => false,
+  ),
   67 => 
   array (
     'module' => 7,
@@ -852,13 +876,37 @@ return array (
     'public' => false,
     'legal_bypass' => false,
   ),
-  71 => 
+  71 =>
   array (
     'module' => 7,
     'module_name' => 'Voice & Video Calling',
-    'method' => 'GET',
-    'path' => '/calls/ice-servers',
-    'operation' => 'get_calls_ice_servers',
+    'method' => 'POST',
+    'path' => '/calls/{callId}/offer',
+    'operation' => 'post_calls_callid_offer',
+    'handler' => 'domain',
+    'resource' => 'calls',
+    'public' => false,
+    'legal_bypass' => false,
+  ),
+  'call_answer' =>
+  array (
+    'module' => 7,
+    'module_name' => 'Voice & Video Calling',
+    'method' => 'POST',
+    'path' => '/calls/{callId}/answer',
+    'operation' => 'post_calls_callid_answer',
+    'handler' => 'domain',
+    'resource' => 'calls',
+    'public' => false,
+    'legal_bypass' => false,
+  ),
+  'call_ice_candidates' =>
+  array (
+    'module' => 7,
+    'module_name' => 'Voice & Video Calling',
+    'method' => 'POST',
+    'path' => '/calls/{callId}/ice-candidates',
+    'operation' => 'post_calls_callid_ice_candidates',
     'handler' => 'domain',
     'resource' => 'calls',
     'public' => false,

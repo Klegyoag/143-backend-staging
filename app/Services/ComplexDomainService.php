@@ -3,10 +3,10 @@ namespace App\Services;
 
 use App\Events\DomainRealtimeEvent;
 use App\Jobs\GenerateDataExport;
-use App\Models\{Media,Memory,User};
+use App\Models\{CoupleMember,Media,Memory,User};
 use App\Support\{ApiResponse,RequestContext};
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\{Crypt,DB,Http,Storage};
+use Illuminate\Support\Facades\{Crypt,DB,Http,Log,Storage};
 use Illuminate\Support\Str;
 
 class ComplexDomainService
@@ -37,14 +37,74 @@ class ComplexDomainService
     {
         $space=RequestContext::coupleSpaceId($r);
         if($op==='get_calls_ice_servers')return ApiResponse::ok(config('143.ice_servers'));
-        if($op==='post_calls'){
-            $d=$r->validate(['type'=>'required|in:audio,video']);$id=(string)Str::uuid();$row=$this->row($r,['id'=>$id,'type'=>$d['type'],'status'=>'ringing','data'=>json_encode(['initiator_id'=>$r->user()->id])]);DB::table('calls')->insert($row);event(new DomainRealtimeEvent('call.incoming',['call_id'=>$id,'type'=>$d['type'],'from_user_id'=>$r->user()->id],null,$space));return ApiResponse::created($this->one('calls',$id,$r));
+        if($op==='get_calls_incoming'){
+            if(!$space)return ApiResponse::ok([]);
+            $calls=DB::table('calls')->where('couple_space_id',$space)->where('status','ringing')
+                ->where('created_at','>=',now()->subMinutes(2))->whereNull('deleted_at')
+                ->orderByDesc('created_at')->limit(5)->get()->map(fn($row)=>$this->decode($row))
+                ->filter(fn($row)=>($row['data']['initiator_id']??null)!==$r->user()->id)->values();
+            return ApiResponse::ok($calls);
         }
-        $id=$r->route('callId');$call=$this->one('calls',$id,$r);if(!$call)return ApiResponse::problem('Call not found','Call does not exist.',404,'not_found');
+        if($op==='post_calls'){
+            $d=$r->validate(['type'=>'required|in:audio,video']);
+            if(!$space || !CoupleMember::where('couple_space_id',$space)->where('user_id','!=',$r->user()->id)->exists())
+                return ApiResponse::problem('Partner not connected','Connect your person before starting a call.',409,'partner_not_connected');
+            $id=(string)Str::uuid();
+            $row=$this->row($r,['id'=>$id,'type'=>$d['type'],'status'=>'ringing','data'=>json_encode(['initiator_id'=>$r->user()->id,'signaling'=>['ice_candidates'=>[]]])]);
+            DB::table('calls')->insert($row);
+            $this->broadcastCall('call.incoming',['call_id'=>$id,'type'=>$d['type'],'from_user_id'=>$r->user()->id],$space);
+            return ApiResponse::created($this->one('calls',$id,$r));
+        }
+        $id=$r->route('callId');
+        if(!is_string($id)||!Str::isUuid($id))return ApiResponse::problem('Call not found','Call does not exist.',404,'not_found');
+        $call=$this->one('calls',$id,$r);if(!$call)return ApiResponse::problem('Call not found','Call does not exist.',404,'not_found');
         if($r->method()==='GET')return ApiResponse::ok($call);
+        if(in_array($op,['post_calls_callid_offer','post_calls_callid_answer','post_calls_callid_ice_candidates'],true))
+            return $this->publishCallSignal($op,$r,$call,$space);
         $status=match(true){str_contains($op,'accept')=>'active',str_contains($op,'decline')=>'declined',str_contains($op,'end')=>'ended',default=>'active'};
         DB::table('calls')->where('id',$id)->update(['status'=>$status,'completed_at'=>in_array($status,['declined','ended'])?now():null,'updated_at'=>now()]);
-        $event=match($status){'active'=>'call.accepted','declined'=>'call.declined','ended'=>'call.ended',default=>'call.updated'};event(new DomainRealtimeEvent($event,['call_id'=>$id,'status'=>$status],null,$space));return ApiResponse::ok($this->one('calls',$id,$r));
+        $event=match($status){'active'=>'call.accepted','declined'=>'call.declined','ended'=>'call.ended',default=>'call.updated'};
+        $this->broadcastCall($event,['call_id'=>$id,'status'=>$status],$space);
+        return ApiResponse::ok($this->one('calls',$id,$r));
+    }
+
+    private function publishCallSignal(string $op,Request $r,array $call,?string $space)
+    {
+        if(in_array($call['status'],['ended','declined'],true))
+            return ApiResponse::problem('Call ended','This call is no longer active.',409,'call_ended');
+        $kind=match($op){
+            'post_calls_callid_offer'=>'offer',
+            'post_calls_callid_answer'=>'answer',
+            default=>'ice_candidate',
+        };
+        $data=$kind==='ice_candidate'
+            ? $r->validate(['candidate'=>'required|string|max:4096','sdp_mid'=>'nullable|string|max:80','sdp_mline_index'=>'nullable|integer|min:0|max:100'])
+            : $r->validate(['sdp'=>'required|string|max:100000','type'=>'nullable|in:offer,answer']);
+        $signal=['from_user_id'=>$r->user()->id,...$data];
+        DB::transaction(function()use($call,$kind,$signal){
+            $row=DB::table('calls')->where('id',$call['id'])->lockForUpdate()->first();
+            $payload=json_decode($row->data??'{}',true);
+            if(!is_array($payload))$payload=[];
+            $signaling=$payload['signaling']??[];
+            if($kind==='ice_candidate'){
+                $candidates=$signaling['ice_candidates']??[];
+                $candidates[]=$signal;
+                $signaling['ice_candidates']=array_slice($candidates,-96);
+            }else $signaling[$kind]=$signal;
+            $payload['signaling']=$signaling;
+            DB::table('calls')->where('id',$call['id'])->update(['data'=>json_encode($payload),'updated_at'=>now()]);
+        });
+        $this->broadcastCall('call.'.$kind,['call_id'=>$call['id'],...$signal],$space);
+        return ApiResponse::ok(['published'=>true]);
+    }
+
+    private function broadcastCall(string $event,array $payload,?string $space):void
+    {
+        try{event(new DomainRealtimeEvent($event,$payload,null,$space));}
+        catch(\Throwable $error){
+            // The phone also polls call state, so a missing websocket host must not break signaling.
+            Log::warning('Call realtime delivery unavailable',['event'=>$event,'call_id'=>$payload['call_id']??null,'error'=>$error->getMessage()]);
+        }
     }
 
     private function together(string $op,Request $r)
