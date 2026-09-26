@@ -4,7 +4,7 @@ use App\Events\DomainRealtimeEvent;
 use App\Models\{CoupleSpace,CoupleMember,CoupleInvite,RelationshipSetting,Presence};
 use App\Support\{ApiResponse,RequestContext};
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\{DB,Log};
 use Illuminate\Support\Str;
 class CoupleService
 {
@@ -27,7 +27,22 @@ class CoupleService
     private function preview(Request $r){$i=$this->findToken($r->route('token'));if(!$i)return ApiResponse::problem('Invalid invite','Invite is invalid, expired, revoked, or already used.',404,'invalid_invite');return ApiResponse::ok(['invite_id'=>$i->id,'couple_space'=>CoupleSpace::find($i->couple_space_id),'expires_at'=>$i->expires_at]);}
     private function accept(Request $r){$i=$this->findToken($r->route('token'));if(!$i)return ApiResponse::problem('Invalid invite','Invite is invalid, expired, revoked, or already used.',404,'invalid_invite');return $this->join($r,$i);}
     private function joinCode(Request $r){$d=$r->validate(['code'=>'required|string']);$i=CoupleInvite::whereRaw('upper(join_code)=?', [strtoupper($d['code'])])->whereNull('revoked_at')->whereNull('accepted_at')->where('expires_at','>',now())->first();if(!$i)return ApiResponse::problem('Invalid code','Join code is invalid or expired.',404,'invalid_invite');return $this->join($r,$i);}
-    private function join(Request $r,CoupleInvite $i){if(RequestContext::coupleSpaceId($r))return ApiResponse::problem('Already linked','Leave the current couple space before joining another.',409,'already_linked');return DB::transaction(function()use($r,$i){$count=CoupleMember::where('couple_space_id',$i->couple_space_id)->lockForUpdate()->count();if($count>=2)return ApiResponse::problem('Couple space full','This couple space already has two members.',409,'couple_space_full');CoupleMember::create(['couple_space_id'=>$i->couple_space_id,'user_id'=>$r->user()->id,'role'=>'partner','joined_at'=>now()]);$i->update(['accepted_at'=>now(),'accepted_by'=>$r->user()->id]);event(new DomainRealtimeEvent('couple.invite.accepted',['user_id'=>$r->user()->id],null,$i->couple_space_id));return ApiResponse::ok(['joined'=>true,'couple_space_id'=>$i->couple_space_id]);});}
+    private function join(Request $r,CoupleInvite $i)
+    {
+        if(RequestContext::coupleSpaceId($r))return ApiResponse::problem('Already linked','Leave the current couple space before joining another.',409,'already_linked');
+        $result=DB::transaction(function()use($r,$i){
+            $count=CoupleMember::where('couple_space_id',$i->couple_space_id)->lockForUpdate()->count();
+            if($count>=2)return ApiResponse::problem('Couple space full','This couple space already has two members.',409,'couple_space_full');
+            CoupleMember::create(['couple_space_id'=>$i->couple_space_id,'user_id'=>$r->user()->id,'role'=>'partner','joined_at'=>now()]);
+            $i->update(['accepted_at'=>now(),'accepted_by'=>$r->user()->id]);
+            return ApiResponse::ok(['joined'=>true,'couple_space_id'=>$i->couple_space_id]);
+        });
+        if($result->getStatusCode()===200){
+            try{event(new DomainRealtimeEvent('couple.invite.accepted',['user_id'=>$r->user()->id],null,$i->couple_space_id));}
+            catch(\Throwable $error){Log::warning('Couple invite realtime delivery unavailable',['invite_id'=>$i->id,'error'=>$error->getMessage()]);}
+        }
+        return $result;
+    }
     private function revoke(Request $r){$i=CoupleInvite::where('id',$r->route('inviteId'))->where('couple_space_id',RequestContext::coupleSpaceId($r))->firstOrFail();$i->update(['revoked_at'=>now()]);return ApiResponse::ok(['revoked'=>true]);}
     private function regenerate(Request $r){$this->revoke($r);return $this->invite($r);}
     private function leave(Request $r){$id=RequestContext::coupleSpaceId($r);if($id)CoupleMember::where('couple_space_id',$id)->where('user_id',$r->user()->id)->delete();return ApiResponse::ok(['left'=>true]);}
