@@ -80,6 +80,9 @@ class ComplexDomainService
         $data=$kind==='ice_candidate'
             ? $r->validate(['candidate'=>'required|string|max:4096','sdp_mid'=>'nullable|string|max:80','sdp_mline_index'=>'nullable|integer|min:0|max:100'])
             : $r->validate(['sdp'=>'required|string|max:100000','type'=>'nullable|in:offer,answer']);
+        // Laravel's TrimStrings middleware strips the final CRLF from SDP.
+        // WebRTC peers require that terminator when parsing the last line.
+        if($kind!=='ice_candidate')$data['sdp']=rtrim($data['sdp'],"\r\n")."\r\n";
         $signal=['from_user_id'=>$r->user()->id,...$data];
         DB::transaction(function()use($call,$kind,$signal){
             $row=DB::table('calls')->where('id',$call['id'])->lockForUpdate()->first();
