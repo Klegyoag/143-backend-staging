@@ -31,7 +31,9 @@ class CoupleService
     {
         if(RequestContext::coupleSpaceId($r))return ApiResponse::problem('Already linked','Leave the current couple space before joining another.',409,'already_linked');
         $result=DB::transaction(function()use($r,$i){
-            $count=CoupleMember::where('couple_space_id',$i->couple_space_id)->lockForUpdate()->count();
+            // Lock the space, not COUNT(*): PostgreSQL rejects FOR UPDATE on aggregates.
+            CoupleSpace::whereKey($i->couple_space_id)->lockForUpdate()->firstOrFail();
+            $count=CoupleMember::where('couple_space_id',$i->couple_space_id)->count();
             if($count>=2)return ApiResponse::problem('Couple space full','This couple space already has two members.',409,'couple_space_full');
             CoupleMember::create(['couple_space_id'=>$i->couple_space_id,'user_id'=>$r->user()->id,'role'=>'partner','joined_at'=>now()]);
             $i->update(['accepted_at'=>now(),'accepted_by'=>$r->user()->id]);
