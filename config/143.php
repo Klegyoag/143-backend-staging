@@ -6,7 +6,7 @@ return [
     'upload_disk' => env('UPLOAD_DISK', 's3'),
     'legal' => ['required_types' => ['terms','privacy']],
     'ice_servers' => array_values(array_filter([
-        ['urls' => env('STUN_URL', 'stun:stun.l.google.com:19302')],
+        ['urls' => env('STUN_URL') ?: 'stun:stun.l.google.com:19302'],
         env('TURN_URL') ? ['urls'=>env('TURN_URL'),'username'=>env('TURN_USERNAME'),'credential'=>env('TURN_CREDENTIAL')] : null,
     ])),
     'plans' => [
